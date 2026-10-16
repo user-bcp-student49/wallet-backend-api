@@ -14,6 +14,7 @@ class GreetingResourceTest {
           .when().get("/hello")
           .then()
              .statusCode(200)
+             .contentType("text/plain")
              .body(is("Hello from Quarkus REST"));
     }
 

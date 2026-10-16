@@ -60,3 +60,20 @@ If you want to learn more about building native executables, please consult <htt
 Easily start your REST Web Services
 
 [Related guide section...](https://quarkus.io/guides/getting-started-reactive#reactive-jax-rs-resources)
+
+## Alta con Google (MVP)
+
+El endpoint `POST /v1/auth/google` usa `MockGoogleIdentityProvider` únicamente
+en los perfiles `dev` y `test`; no realiza llamadas a Google. Para probarlo,
+envía un `idToken` con el prefijo `mock-google-token-` y un sufijo no vacío,
+junto con un `deviceId`. La identidad resultante es determinista para cada
+token.
+
+La sesión requiere una clave JWT configurada fuera del repositorio mediante
+`wallet.auth.jwt.secret` o la variable de entorno `WALLET_AUTH_JWT_SECRET`.
+La clave debe tener al menos 32 bytes. La aplicación no tiene una clave por
+defecto; si falta o es débil, el inicio falla. No uses la clave de pruebas en
+desarrollo compartido ni producción.
+
+El mock no se registra en el perfil `prod`. La construcción de producción falla
+si no hay un proveedor de identidad real configurado.

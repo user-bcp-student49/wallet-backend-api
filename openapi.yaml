@@ -1,0 +1,440 @@
+openapi: 3.1.0
+info:
+  title: Minka Wallet MVP API
+  version: 1.0.0
+  summary: API para el acceso y el registro inicial de una wallet.
+  description: |
+    Flujo de registro inicial que consume la aplicación:
+
+    1. Autenticarse con Google.
+    2. Registrar obligatoriamente una passkey usando el autenticador del
+       dispositivo (por ejemplo, biometría facial cuando esté disponible).
+    3. Ingresar y verificar un celular peruano mediante un código SMS.
+
+    La passkey es un paso obligatorio del registro, no un método de inicio de
+    sesión para este MVP. Los ingresos posteriores se realizan con Google. El
+    rostro y las plantillas biométricas permanecen en el dispositivo; la API
+    verifica la credencial WebAuthn. Verificar el celular completa el registro
+    y permite continuar a la pantalla principal. Pagos y otras funciones quedan
+    fuera de este contrato.
+servers:
+  - url: https://sandbox.api.minka.pe
+    description: Sandbox
+  - url: https://api.minka.pe
+    description: Producción
+tags:
+  - name: Acceso
+    description: Autenticación inicial con Google.
+  - name: Registro
+    description: Registro de passkey y verificación del celular.
+
+security:
+  - bearerAuth: []
+
+paths:
+  /v1/auth/google:
+    post:
+      tags: [Acceso]
+      operationId: authenticateWithGoogle
+      summary: Iniciar o continuar sesión con Google
+      description: |
+        Valida el ID token de Google y devuelve una sesión para continuar el
+        registro. Si la persona aún no registró una passkey, la siguiente acción
+        será REGISTER_BIOMETRIC. Los ingresos posteriores se realizan con Google;
+        este contrato no ofrece un endpoint de inicio de sesión con passkey.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GoogleAuthRequest"
+            example:
+              idToken: google-id-token
+              deviceId: device-123456
+      responses:
+        "200":
+          description: Sesión iniciada y estado del registro devueltos.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthSession"
+        "401":
+          $ref: "#/components/responses/InvalidCredentials"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /v1/auth/biometric/registration-challenges:
+    post:
+      tags: [Registro]
+      operationId: createBiometricRegistrationChallenge
+      summary: Preparar el paso obligatorio de registro biométrico
+      description: |
+        Requiere una sesión iniciada con Google y que el registro esté en el
+        estado BIOMETRIC_PENDING. Devuelve las opciones WebAuthn que el cliente
+        entrega al autenticador del dispositivo para crear una passkey. El
+        autenticador puede solicitar biometría facial u otro método local
+        admitido por el dispositivo. Este paso debe completarse antes de ingresar
+        el celular.
+      responses:
+        "201":
+          description: Opciones de registro creadas.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BiometricRegistrationChallenge"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/InvalidState"
+
+  /v1/auth/biometric/registrations:
+    post:
+      tags: [Registro]
+      operationId: registerBiometricCredential
+      summary: Completar el registro biométrico
+      description: |
+        Verifica la respuesta WebAuthn y asocia la passkey a la cuenta
+        autenticada con Google. Al completarse, el registro avanza al ingreso
+        del celular. La passkey no se usa como método de inicio de sesión en
+        este MVP.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BiometricRegistrationRequest"
+      responses:
+        "200":
+          description: Passkey registrada.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BiometricRegistrationResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/InvalidState"
+        "410":
+          description: El desafío de registro venció o ya fue utilizado.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /v1/onboarding:
+    get:
+      tags: [Registro]
+      operationId: getOnboarding
+      summary: Consultar el siguiente paso del registro
+      description: Permite retomar el flujo después de autenticarse con Google.
+      responses:
+        "200":
+          description: Estado actual y siguiente acción.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Onboarding"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/onboarding/phone/challenges:
+    post:
+      tags: [Registro]
+      operationId: sendPhoneVerificationCode
+      summary: Enviar el código de verificación por SMS
+      description: |
+        Envía un código de seis dígitos a un celular peruano. Requiere que se
+        haya completado el registro biométrico. Un código nuevo invalida el
+        anterior.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PhoneChallengeRequest"
+            example:
+              phoneNumber: "+51999999999"
+      responses:
+        "201":
+          description: Código enviado.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PhoneChallenge"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: El celular ya está asociado a otra cuenta o falta completar un paso previo.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /v1/onboarding/phone/verifications:
+    post:
+      tags: [Registro]
+      operationId: verifyPhoneCode
+      summary: Validar el código recibido por SMS
+      description: Requiere que el registro biométrico ya se haya completado.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PhoneVerificationRequest"
+            example:
+              challengeId: phc_01JMX8M5BW7CM2XQJ2B5QH0G2M
+              code: "482913"
+      responses:
+        "200":
+          description: Celular verificado; el registro se completa y la app puede abrir la pantalla principal.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Onboarding"
+              example:
+                status: COMPLETED
+                nextAction: OPEN_HOME
+                phoneNumberMasked: "+51 999 *** 999"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "410":
+          description: El código venció o ya fue utilizado.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "409":
+          $ref: "#/components/responses/InvalidState"
+        "422":
+          description: Código incorrecto o datos inválidos.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  responses:
+    Unauthorized:
+      description: Falta una sesión válida o venció.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    InvalidCredentials:
+      description: La credencial de Google o la passkey no se pudo verificar.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    InvalidState:
+      description: La operación no corresponde al paso actual del registro.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    NotFound:
+      description: No se encontró el recurso solicitado.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    ValidationError:
+      description: Uno o más campos no son válidos.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    RateLimited:
+      description: Se excedió el límite de intentos.
+      headers:
+        Retry-After:
+          description: Segundos que se deben esperar antes de reintentar.
+          schema:
+            type: integer
+            minimum: 1
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+
+  schemas:
+    GoogleAuthRequest:
+      type: object
+      additionalProperties: false
+      required: [idToken, deviceId]
+      properties:
+        idToken:
+          type: string
+          minLength: 20
+          description: ID token de Google OpenID Connect; el backend valida firma y audiencia.
+        deviceId:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: Identificador estable del dispositivo que envía la app. Es la clave del límite de intentos (429).
+
+    BiometricRegistrationChallenge:
+      type: object
+      additionalProperties: false
+      required: [challengeId, publicKey, expiresAt]
+      properties:
+        challengeId:
+          type: string
+        publicKey:
+          type: object
+          description: Opciones WebAuthn para crear una passkey, serializadas como JSON.
+          additionalProperties: true
+        expiresAt:
+          type: string
+          format: date-time
+
+    BiometricRegistrationRequest:
+      type: object
+      additionalProperties: false
+      required: [challengeId, credential]
+      properties:
+        challengeId:
+          type: string
+        credential:
+          type: object
+          description: Credencial WebAuthn creada por el autenticador del dispositivo.
+          additionalProperties: true
+
+    BiometricRegistrationResult:
+      type: object
+      additionalProperties: false
+      required: [registered, onboarding]
+      properties:
+        registered:
+          type: boolean
+          const: true
+        onboarding:
+          $ref: "#/components/schemas/Onboarding"
+
+    AuthSession:
+      type: object
+      additionalProperties: false
+      required: [accessToken, expiresIn, tokenType, user, onboarding]
+      properties:
+        accessToken:
+          type: string
+          description: JWT de acceso de la aplicación.
+        expiresIn:
+          type: integer
+          description: Duración del token en segundos.
+          example: 900
+        tokenType:
+          type: string
+          const: Bearer
+        user:
+          $ref: "#/components/schemas/User"
+        onboarding:
+          $ref: "#/components/schemas/Onboarding"
+
+    User:
+      type: object
+      additionalProperties: false
+      required: [id, email, biometricRegistered]
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+          format: email
+        name:
+          type: [string, "null"]
+        biometricRegistered:
+          type: boolean
+          description: Indica si se completó el paso obligatorio de registro de passkey.
+
+    Onboarding:
+      type: object
+      additionalProperties: false
+      required: [status, nextAction, phoneNumberMasked]
+      properties:
+        status:
+          type: string
+          enum: [BIOMETRIC_PENDING, PHONE_PENDING, PHONE_VERIFICATION_PENDING, COMPLETED]
+        nextAction:
+          type: string
+          enum: [REGISTER_BIOMETRIC, ENTER_PHONE, VERIFY_PHONE, OPEN_HOME]
+        phoneNumberMasked:
+          type: [string, "null"]
+          example: "+51 999 *** 999"
+
+    PhoneChallengeRequest:
+      type: object
+      additionalProperties: false
+      required: [phoneNumber]
+      properties:
+        phoneNumber:
+          type: string
+          pattern: ^\+519\d{8}$
+          description: Celular peruano en formato E.164.
+
+    PhoneChallenge:
+      type: object
+      additionalProperties: false
+      required: [challengeId, phoneNumberMasked, expiresAt, resendAvailableAt]
+      properties:
+        challengeId:
+          type: string
+        phoneNumberMasked:
+          type: string
+          example: "+51 999 *** 999"
+        expiresAt:
+          type: string
+          format: date-time
+        resendAvailableAt:
+          type: string
+          format: date-time
+
+    PhoneVerificationRequest:
+      type: object
+      additionalProperties: false
+      required: [challengeId, code]
+      properties:
+        challengeId:
+          type: string
+        code:
+          type: string
+          pattern: ^\d{6}$
+          writeOnly: true
+
+    Problem:
+      type: object
+      description: Respuesta de error basada en RFC 9457.
+      additionalProperties: false
+      required: [type, title, status, code, detail]
+      properties:
+        type:
+          type: string
+          format: uri
+        title:
+          type: string
+        status:
+          type: integer
+          minimum: 400
+          maximum: 599
+        code:
+          type: string
+        detail:
+          type: string
